@@ -1,0 +1,333 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Simple Brick Game</title>
+  <style>
+    :root{
+      --bg:#0f1724;
+      --panel:#111827;
+      --accent:#10b981;
+      --muted:#9ca3af;
+    }
+    html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto,'Helvetica Neue',Arial}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#031021 0%,#071428 100%);color:#e6eef8}
+    .wrap{width:900px;max-width:96vw;background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));border-radius:12px;padding:18px;box-shadow:0 10px 30px rgba(2,6,23,0.6);}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px}
+    header h1{font-size:18px;margin:0}
+    .info{display:flex;gap:12px;align-items:center}
+    .chip{background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:999px;font-size:13px;color:var(--muted)}
+    canvas{display:block;background:linear-gradient(180deg,#061024,#0a1220);border-radius:8px;width:100%;height:auto}
+    .controls{margin-top:10px;display:flex;gap:8px;align-items:center}
+    button{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer}
+    button.primary{border-color:var(--accent);color:var(--accent)}
+    footer{margin-top:12px;color:var(--muted);font-size:13px}
+    @media (max-width:520px){header h1{font-size:16px}}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>Simple Brick Game</h1>
+      <div class="info">
+        <div class="chip">Score: <span id="score">0</span></div>
+        <div class="chip">Lives: <span id="lives">3</span></div>
+      </div>
+    </header>
+
+    <canvas id="game" width="800" height="520"></canvas>
+
+    <div class="controls">
+      <button id="start" class="primary">Start / Resume</button>
+      <button id="pause">Pause</button>
+      <button id="restart">Restart</button>
+      <div style="flex:1"></div>
+      <div style="color:var(--muted);font-size:13px">Controls: ← → or A D, Mouse to move paddle</div>
+    </div>
+
+    <footer>
+      Tip: Break all bricks to win. Ball speed increases slightly each level.
+    </footer>
+  </div>
+
+  <script>
+    // Simple Brick Breaker Game
+    const canvas = document.getElementById('game');
+    const ctx = canvas.getContext('2d');
+
+    // UI
+    const scoreEl = document.getElementById('score');
+    const livesEl = document.getElementById('lives');
+    const startBtn = document.getElementById('start');
+    const pauseBtn = document.getElementById('pause');
+    const restartBtn = document.getElementById('restart');
+
+    // Virtual resolution (canvas is fixed); we scale by CSS so drawing uses logical px
+    const W = canvas.width;
+    const H = canvas.height;
+
+    // Game state
+    let score = 0;
+    let lives = 3;
+    let paused = true;
+    let gameOver = false;
+
+    // Paddle
+    const paddle = {
+      w: 120,
+      h: 12,
+      x: (W - 120)/2,
+      y: H - 40,
+      speed: 8,
+      vx: 0
+    };
+
+    // Ball
+    const ball = {
+      r: 8,
+      x: W/2,
+      y: H/2,
+      speed: 5,
+      vx: 4,
+      vy: -4
+    };
+
+    // Bricks
+    const brick = {
+      rows: 5,
+      cols: 10,
+      w: 66,
+      h: 20,
+      padding: 8,
+      offsetTop: 50,
+      offsetLeft: 22
+    };
+    let bricks = [];
+
+    function initBricks(){
+      bricks = [];
+      for(let r=0;r<brick.rows;r++){
+        bricks[r]=[];
+        for(let c=0;c<brick.cols;c++){
+          const x = brick.offsetLeft + c*(brick.w+brick.padding);
+          const y = brick.offsetTop + r*(brick.h+brick.padding);
+          bricks[r][c] = {x,y,status:1};
+        }
+      }
+    }
+
+    function resetBall(){
+      ball.x = W/2;
+      ball.y = H/2 - 40;
+      ball.speed = 5;
+      // randomize initial direction
+      const angle = (Math.random()*Math.PI/2) + Math.PI/4; // 45-135 deg
+      ball.vx = ball.speed * Math.cos(angle) * (Math.random() > 0.5 ? 1 : -1);
+      ball.vy = -Math.abs(ball.speed * Math.sin(angle));
+    }
+
+    function resetGame(){
+      score = 0; lives = 3; paused = true; gameOver = false;
+      paddle.x = (W - paddle.w)/2;
+      initBricks();
+      resetBall();
+      updateUI();
+      draw();
+    }
+
+    function updateUI(){
+      scoreEl.textContent = score;
+      livesEl.textContent = lives;
+    }
+
+    // Controls
+    const keys = {};
+    window.addEventListener('keydown', e=>{keys[e.key]=true});
+    window.addEventListener('keyup', e=>{keys[e.key]=false});
+    // Mouse
+    canvas.addEventListener('mousemove', e=>{
+      const rect = canvas.getBoundingClientRect();
+      // map mouse to canvas coords
+      const mx = (e.clientX - rect.left) * (canvas.width / rect.width);
+      paddle.x = mx - paddle.w/2;
+      // clamp
+      if(paddle.x < 0) paddle.x = 0;
+      if(paddle.x + paddle.w > W) paddle.x = W - paddle.w;
+    });
+
+    // Buttons
+    startBtn.addEventListener('click', ()=>{ paused=false; gameOver=false; loop(); });
+    pauseBtn.addEventListener('click', ()=>{ paused=true; });
+    restartBtn.addEventListener('click', ()=>{ resetGame(); });
+
+    // Collision detection
+    function rectCircleColliding(cx,cy,r,rx,ry,rw,rh){
+      // Find the closest point to the circle within the rectangle
+      const closestX = Math.max(rx, Math.min(cx, rx+rw));
+      const closestY = Math.max(ry, Math.min(cy, ry+rh));
+      const dx = cx-closestX;
+      const dy = cy-closestY;
+      return (dx*dx + dy*dy) < (r*r);
+    }
+
+    function update(){
+      if(paused || gameOver) return;
+
+      // Paddle via keyboard
+      if(keys['ArrowLeft'] || keys['a'] || keys['A']){
+        paddle.x -= paddle.speed;
+      } else if(keys['ArrowRight'] || keys['d'] || keys['D']){
+        paddle.x += paddle.speed;
+      }
+      // clamp
+      if(paddle.x < 0) paddle.x = 0;
+      if(paddle.x + paddle.w > W) paddle.x = W - paddle.w;
+
+      // Move ball
+      ball.x += ball.vx;
+      ball.y += ball.vy;
+
+      // Wall collisions
+      if(ball.x - ball.r < 0){ ball.x = ball.r; ball.vx *= -1; }
+      if(ball.x + ball.r > W){ ball.x = W - ball.r; ball.vx *= -1; }
+      if(ball.y - ball.r < 0){ ball.y = ball.r; ball.vy *= -1; }
+
+      // Paddle collision
+      if(rectCircleColliding(ball.x,ball.y,ball.r, paddle.x, paddle.y, paddle.w, paddle.h)){
+        // reflect based on hit position
+        const collidePoint = (ball.x - (paddle.x + paddle.w/2)) / (paddle.w/2);
+        const maxBounceAngle = Math.PI/3; // 60 degrees
+        const angle = collidePoint * maxBounceAngle;
+        const speed = Math.sqrt(ball.vx*ball.vx + ball.vy*ball.vy);
+        ball.vx = speed * Math.sin(angle);
+        ball.vy = -Math.abs(speed * Math.cos(angle));
+        // nudge ball above paddle to prevent sticking
+        ball.y = paddle.y - ball.r - 0.1;
+      }
+
+      // Bottom (miss)
+      if(ball.y - ball.r > H){
+        lives--;
+        updateUI();
+        if(lives <= 0){
+          gameOver = true; paused = true; alert('Game Over! Final score: ' + score);
+        } else {
+          resetBall();
+        }
+      }
+
+      // Bricks collision
+      for(let r=0;r<brick.rows;r++){
+        for(let c=0;c<brick.cols;c++){
+          const b = bricks[r][c];
+          if(b && b.status === 1){
+            if(rectCircleColliding(ball.x,ball.y,ball.r, b.x, b.y, brick.w, brick.h)){
+              // mark brick
+              b.status = 0;
+              score += 10;
+              updateUI();
+              // simple bounce: reverse Y velocity
+              ball.vy *= -1;
+              // speed up slighty
+              const speedInc = 0.15;
+              const s = Math.sqrt(ball.vx*ball.vx + ball.vy*ball.vy) + speedInc;
+              const ang = Math.atan2(ball.vy, ball.vx);
+              ball.vx = s * Math.cos(ang);
+              ball.vy = s * Math.sin(ang);
+              // check win
+              if(checkWin()){
+                paused = true; gameOver = true; alert('You Win! Final score: ' + score);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    function checkWin(){
+      for(let r=0;r<brick.rows;r++){
+        for(let c=0;c<brick.cols;c++){
+          if(bricks[r][c] && bricks[r][c].status === 1) return false;
+        }
+      }
+      return true;
+    }
+
+    // Drawing
+    function drawRoundedRect(x,y,w,h,radius){
+      ctx.beginPath();
+      ctx.moveTo(x+radius,y);
+      ctx.arcTo(x+w,y,x+w,y+h,radius);
+      ctx.arcTo(x+w,y+h,x,y+h,radius);
+      ctx.arcTo(x,y+h,x,y,radius);
+      ctx.arcTo(x,y,x+w,y,radius);
+      ctx.closePath();
+      ctx.fill();
+    }
+
+    function draw(){
+      // clear
+      ctx.clearRect(0,0,W,H);
+
+      // background vignette (subtle)
+      const g = ctx.createLinearGradient(0,0,0,H);
+      g.addColorStop(0,'rgba(255,255,255,0.02)');
+      g.addColorStop(1,'rgba(0,0,0,0.05)');
+      ctx.fillStyle = g;
+      ctx.fillRect(0,0,W,H);
+
+      // Draw bricks
+      for(let r=0;r<brick.rows;r++){
+        for(let c=0;c<brick.cols;c++){
+          const b = bricks[r][c];
+          if(b && b.status === 1){
+            const hue = 200 - (r*18);
+            ctx.fillStyle = `hsl(${hue} 70% 55%)`;
+            drawRoundedRect(b.x, b.y, brick.w, brick.h, 6);
+            // small inner highlight
+            ctx.fillStyle = 'rgba(255,255,255,0.06)';
+            ctx.fillRect(b.x+6, b.y+2, 6, brick.h-4);
+          }
+        }
+      }
+
+      // Paddle
+      ctx.fillStyle = '#10b981';
+      drawRoundedRect(paddle.x, paddle.y, paddle.w, paddle.h, 6);
+
+      // Ball
+      ctx.beginPath();
+      ctx.arc(ball.x, ball.y, ball.r, 0, Math.PI*2);
+      ctx.fillStyle = '#fef3c7';
+      ctx.fill();
+      ctx.closePath();
+
+      // HUD small
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      ctx.fillRect(6,6,120,32);
+    }
+
+    // Game loop
+    let last = 0;
+    function loop(ts){
+      if(!last) last = ts;
+      const dt = ts - last;
+      last = ts;
+
+      update();
+      draw();
+
+      if(!paused) requestAnimationFrame(loop);
+    }
+
+    // Start
+    initBricks();
+    resetBall();
+    updateUI();
+    draw();
+
+    // Helpful: start automatically paused so user can press Start
+  </script>
+</body>
+</html>
